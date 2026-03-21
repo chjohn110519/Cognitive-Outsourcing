@@ -1,0 +1,46 @@
+import Anthropic from "@anthropic-ai/sdk"
+import { NextRequest, NextResponse } from "next/server"
+
+const client = new Anthropic()
+
+export async function POST(req: NextRequest) {
+  const { topic, questions, answers } = await req.json()
+
+  const qa = questions
+    .map((q: string, i: number) => `Q: ${q}\nA: ${answers[i] || "(답변 없음)"}`)
+    .join("\n\n")
+
+  const message = await client.messages.create({
+    model: "claude-sonnet-4-6",
+    max_tokens: 2048,
+    system: `당신은 논증 구조 분석가입니다.
+학생의 답변을 분석하여 각 내용을 논리 카드(블록)로 분류하세요.
+
+블록 타입:
+- claim: 주장 (핵심 입장, 주제에 대한 의견)
+- evidence: 근거 (사실, 데이터, 경험)
+- counter: 반론 (반대 입장, 한계)
+- example: 사례 (구체적 예시, 사건)
+
+규칙:
+- 하나의 답변에서 여러 블록을 추출할 수 있음
+- 각 블록은 간결하게 1~3문장으로 정리
+- userContent는 학생이 직접 쓴 원본 텍스트
+- aiContent는 빈 문자열로 설정 (MVP에서 AI 보완 없음)
+- JSON만 응답: { "blocks": [{ "id": "b1", "type": "claim"|"evidence"|"counter"|"example", "content": "...", "userContent": "...", "aiContent": "" }] }`,
+    messages: [
+      {
+        role: "user",
+        content: `주제: ${topic}\n\n${qa}`,
+      },
+    ],
+  })
+
+  const text = message.content[0]
+  if (text.type !== "text") {
+    return NextResponse.json({ error: "응답 생성 실패" }, { status: 500 })
+  }
+
+  const parsed = JSON.parse(text.text)
+  return NextResponse.json(parsed)
+}
