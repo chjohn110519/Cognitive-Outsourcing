@@ -24,10 +24,9 @@ export async function POST(req: NextRequest) {
 
 규칙:
 - 하나의 답변에서 여러 블록을 추출할 수 있음
-- 각 블록은 간결하게 1~3문장으로 정리
-- userContent는 학생이 직접 쓴 원본 텍스트
-- aiContent는 빈 문자열로 설정 (MVP에서 AI 보완 없음)
-- JSON만 응답: { "blocks": [{ "id": "b1", "type": "claim"|"evidence"|"counter"|"example", "content": "...", "userContent": "...", "aiContent": "" }] }`,
+- 각 블록은 학생의 말투와 표현을 최대한 살려 1~3문장으로 정리
+- 블록 수는 3~6개가 적당
+- JSON만 응답: { "blocks": [{ "id": "b1", "type": "claim"|"evidence"|"counter"|"example", "content": "..." }] }`,
     messages: [
       {
         role: "user",
