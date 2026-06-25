@@ -3,8 +3,16 @@ import { NextRequest, NextResponse } from "next/server"
 
 const client = new Anthropic()
 
+function extractJson(raw: string): string {
+  return raw.replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "").trim()
+}
+
 export async function POST(req: NextRequest) {
   const { topic, questions, answers } = await req.json()
+
+  if (!Array.isArray(questions) || !Array.isArray(answers)) {
+    return NextResponse.json({ error: "잘못된 요청 형식" }, { status: 400 })
+  }
 
   const qa = questions
     .map((q: string, i: number) => `Q: ${q}\nA: ${answers[i] || "(답변 없음)"}`)
@@ -40,6 +48,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "응답 생성 실패" }, { status: 500 })
   }
 
-  const parsed = JSON.parse(text.text)
-  return NextResponse.json(parsed)
+  try {
+    const parsed = JSON.parse(extractJson(text.text))
+    return NextResponse.json(parsed)
+  } catch {
+    return NextResponse.json({ error: "응답 파싱 실패" }, { status: 500 })
+  }
 }

@@ -3,6 +3,10 @@ import { NextRequest, NextResponse } from "next/server"
 
 const client = new Anthropic()
 
+function extractJson(raw: string): string {
+  return raw.replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "").trim()
+}
+
 export async function POST(req: NextRequest) {
   const { topic } = await req.json()
 
@@ -35,7 +39,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "응답 생성 실패" }, { status: 500 })
   }
 
-  const questions: string[] = JSON.parse(content.text)
-
-  return NextResponse.json({ questions })
+  try {
+    const questions: string[] = JSON.parse(extractJson(content.text))
+    return NextResponse.json({ questions })
+  } catch {
+    return NextResponse.json({ error: "응답 파싱 실패" }, { status: 500 })
+  }
 }
