@@ -44,6 +44,7 @@ import {
   Clock,
   Award,
   Zap,
+  Info,
 } from "lucide-react"
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -63,14 +64,14 @@ interface Block {
   id: string
   type: CardType
   content: string
-  originalContent: string // AI가 처음 가공한 원본
-  hasEdited: boolean      // 수동 수정 여부
-  sourceQIndex?: number   // 원본 질문 인덱스 (0, 1, 2)
+  originalContent: string 
+  hasEdited: boolean      
+  sourceQIndex?: number   
 }
 
 interface HistoryEvent {
   timestamp: number
-  action: "init" | "rearrange" | "edit" | "add" | "delete" | "change_type"
+  action: "init" | "rearrange" | "edit" | "add" | "delete" | "change_type" | "idle_detect"
   description: string
 }
 
@@ -136,6 +137,24 @@ const LOADING_B_MSGS = [
   "당신의 생각을 카드로 만들고 있어요...",
 ]
 
+// 각 논리 카드 쌍 사이에 논리적 흐름을 돕는 국문 접속사 사전 정의 (Step 3 연결용)
+const LOGICAL_TRANSITIONS: Record<string, string[]> = {
+  "claim-evidence": ["왜냐하면", "이에 대한 구체적인 근거로", "그 이유는"],
+  "claim-counter": ["그러나 일각에서는", "물론 이에 대한 반론으로", "다만 우려되는 점은"],
+  "evidence-example": ["실례로", "구체적인 사례를 들면", "실제로"],
+  "counter-solution": ["이를 극복하기 위해", "이에 대한 대안으로", "따라서 해결책으로"],
+  "problem-solution": ["이 문제를 해결하기 위해", "이에 따른 대응 방향으로", "따라서 제시하는 대책은"],
+  "solution-businessModel": ["이 솔루션의 수익화 방안은", "비즈니스 모델 측면에서는", "지속 가능한 성장을 위해"],
+  "reflection-counter": ["하지만 되짚어보면", "그럼에도 불구하고", "한 단계 더 나아가 생각해보면"],
+  default: ["그리고", "나아가", "더불어", "또한"],
+}
+
+function getTransition(prevType: CardType, nextType: CardType): string {
+  const key = `${prevType}-${nextType}`
+  const list = LOGICAL_TRANSITIONS[key] || LOGICAL_TRANSITIONS.default
+  return list[0]
+}
+
 // ── Hooks ──────────────────────────────────────────────────────────────────
 
 function useRotatingMsg(messages: string[], active: boolean) {
@@ -161,23 +180,28 @@ function useTimer(running: boolean) {
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-// 어휘 다양성 지표 TTR (Type-Token Ratio) 계산
-function calculateTTR(texts: string[]): number {
+// 텍스트 볼륨 가중 TTR (어휘 다양성 지표 보완)
+// 짧은 답변 작성 시 TTR이 지나치게 100%로 편향되는 오류를 최소 글자 수 페널티 가중치로 보완
+function calculateWeightedTTR(texts: string[]): number {
   const fullText = texts.join(" ").trim()
   if (!fullText) return 0
+  const charCount = fullText.length
   const tokens = fullText.toLowerCase().split(/[\s,.\?\!\'\"]+/).filter(w => w.length > 0)
   if (tokens.length === 0) return 0
+  
   const uniqueTokens = new Set(tokens)
-  return Math.round((uniqueTokens.size / tokens.length) * 100) / 100
+  const baseTtr = uniqueTokens.size / tokens.length
+
+  // 글자 수가 100자 이하일 경우 점진적 패널티 스케일 적용 (100자 이상 시 1.0 가중치 확보)
+  const lengthPenalty = Math.min(1.0, charCount / 100)
+  return Math.round(baseTtr * lengthPenalty * 100) / 100
 }
 
-// 중요 키워드 감지 (4글자 이상 한글 명사구 느낌 또는 영문/숫자 단어)
 function extractKeywords(text: string): string[] {
   if (!text) return []
   const cleanText = text.replace(/[.,\/#!$%\^&\*;:{}=\-_`~()?\"]/g, "")
   const words = cleanText.split(/\s+/)
   const keywords = words.filter(word => {
-    // 3자 이상의 단어 중 영문, 숫자 혹은 다소 긴 한글 단어를 키워드로 취급
     const isEnglishOrNum = /^[a-zA-Z0-9]{2,}$/.test(word)
     const isKoreanLong = /^[\uac00-\ud7a3]{3,}$/.test(word)
     return isEnglishOrNum || isKoreanLong
@@ -254,7 +278,6 @@ function SortableCard({
     zIndex: isDragging ? 50 : "auto",
   }
 
-  // Keyword Lock 감지
   const sourceRawText = block.sourceQIndex !== undefined ? rawAnswers[block.sourceQIndex] : ""
   const rawKeywords = extractKeywords(sourceRawText)
   const lockedKeywords = rawKeywords.filter(kw => block.content.includes(kw))
@@ -270,7 +293,6 @@ function SortableCard({
       }`}
     >
       <div className="flex items-start gap-3 w-full">
-        {/* Drag Handle */}
         <button
           {...attributes}
           {...listeners}
@@ -281,13 +303,11 @@ function SortableCard({
         </button>
 
         <div className="flex-1 space-y-2 min-w-0">
-          {/* Header */}
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-xs font-medium text-muted-foreground tabular-nums">
               {index + 1}
             </span>
             
-            {/* Block Type Select */}
             <select
               value={block.type}
               onChange={(e) => onChangeType(block.id, e.target.value as CardType)}
@@ -300,7 +320,6 @@ function SortableCard({
               ))}
             </select>
 
-            {/* Keyword Lock Status Indicator */}
             {lockedKeywords.length > 0 && (
               <span className="flex items-center gap-0.5 rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300">
                 <Lock className="size-2.5 text-blue-500" />
@@ -316,7 +335,6 @@ function SortableCard({
             )}
           </div>
 
-          {/* Editable Content */}
           <div className={`relative rounded-md transition-colors ${
             focused ? "bg-muted/40 ring-1 ring-border" : "hover:bg-muted/20"
           }`}>
@@ -336,7 +354,6 @@ function SortableCard({
           </div>
         </div>
 
-        {/* Delete button */}
         <button
           onClick={() => onDelete(block.id)}
           className="mt-1 text-muted-foreground/30 hover:text-destructive/80 transition-colors"
@@ -346,7 +363,6 @@ function SortableCard({
         </button>
       </div>
 
-      {/* Keyword Lock Highlighting */}
       {lockedKeywords.length > 0 && (
         <div className="flex flex-wrap gap-1 items-center px-7 text-[10px] text-muted-foreground">
           <span className="text-slate-400">보존된 키워드:</span>
@@ -358,7 +374,6 @@ function SortableCard({
         </div>
       )}
 
-      {/* Vibe Preserving Overlay Button & View */}
       {block.sourceQIndex !== undefined && (
         <div className="px-7">
           <button
@@ -441,11 +456,17 @@ export default function Home() {
   const [blocks, setBlocks] = useState<Block[]>([])
   const [rearrangeCount, setRearrangeCount] = useState(0)
   const [historyLogs, setHistoryLogs] = useState<HistoryEvent[]>([])
+  
+  // 유휴 시간(Idle Time) 측정을 위한 타이머 & 상태 개선
   const step2Seconds = useTimer(step === 2)
+  const [idleSeconds, setIdleSeconds] = useState(0)
+  const lastActiveTimeRef = useRef<number>(Date.now())
+  const isIdleRef = useRef<boolean>(false)
 
   // Step 3
   const [copied, setCopied] = useState(false)
   const canvasTimeRef = useRef(0)
+  const canvasIdleRef = useRef(0)
 
   // Loading messages
   const loadingQMsg = useRotatingMsg(LOADING_Q_MSGS, isLoadingQ)
@@ -457,11 +478,51 @@ export default function Home() {
     setHistoryLogs((prev) => [...prev, { timestamp: Date.now(), action, description }])
   }, [])
 
+  // ── Idle Detection Logic (사유 어뷰징 방지) ──────────────────────────────
+  // 마우스나 키보드 조작이 30초 이상 없으면 Idle 상태로 분류하고, 휴면 시간을 적산
+  useEffect(() => {
+    if (step !== 2) return
+
+    const handleActivity = () => {
+      lastActiveTimeRef.current = Date.now()
+      if (isIdleRef.current) {
+        isIdleRef.current = false
+        addLog("idle_detect", "학생이 에디터 조작으로 복귀했습니다.")
+      }
+    }
+
+    window.addEventListener("mousemove", handleActivity)
+    window.addEventListener("keydown", handleActivity)
+    window.addEventListener("scroll", handleActivity)
+
+    const interval = setInterval(() => {
+      const now = Date.now()
+      // 30초 동안 움직임이 없는 경우 유휴 처리
+      if (now - lastActiveTimeRef.current > 30000) {
+        if (!isIdleRef.current) {
+          isIdleRef.current = true
+          addLog("idle_detect", "30초 동안 조작이 없어 유휴 상태(Idle)로 진입했습니다.")
+        }
+        setIdleSeconds(s => s + 1)
+      }
+    }, 1000)
+
+    return () => {
+      window.removeEventListener("mousemove", handleActivity)
+      window.removeEventListener("keydown", handleActivity)
+      window.removeEventListener("scroll", handleActivity)
+      clearInterval(interval)
+    }
+  }, [step, addLog])
+
   // Save canvas time when leaving Step 2
   useEffect(() => {
     if (step !== 2) return
-    return () => { canvasTimeRef.current = step2Seconds }
-  }, [step, step2Seconds])
+    return () => { 
+      canvasTimeRef.current = step2Seconds 
+      canvasIdleRef.current = idleSeconds
+    }
+  }, [step, step2Seconds, idleSeconds])
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -479,6 +540,8 @@ export default function Home() {
     setQuestions([])
     setAnswers([])
     setHistoryLogs([])
+    setIdleSeconds(0)
+    isIdleRef.current = false
     try {
       const res = await fetch("/api/generate-questions", {
         method: "POST",
@@ -610,9 +673,11 @@ export default function Home() {
 
   function handleGoToStep3() {
     canvasTimeRef.current = step2Seconds
+    canvasIdleRef.current = idleSeconds
     setStep(3)
   }
 
+  // 처음부터
   function handleReset() {
     setStep(1)
     setTopic("")
@@ -622,39 +687,53 @@ export default function Home() {
     setError("")
     setRetryFn(null)
     setHistoryLogs([])
+    setIdleSeconds(0)
+    isIdleRef.current = false
     canvasTimeRef.current = 0
+    canvasIdleRef.current = 0
   }
 
-  // 복사
   function handleCopy() {
-    const text = blocks
-      .map((b, i) => `${i + 1}. [${CARD_LABELS[b.type]}] ${b.content}`)
-      .join("\n\n")
+    // 접속사가 적용된 최종 개요 에세이 흐름 복사
+    let text = ""
+    blocks.forEach((b, i) => {
+      if (i > 0) {
+        const prev = blocks[i - 1]
+        const transition = getTransition(prev.type, b.type)
+        text += `\n\n[${transition}]\n\n`
+      }
+      text += `[${CARD_LABELS[b.type]}] ${b.content}`
+    })
+
     navigator.clipboard.writeText(text)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
   }
 
-  // ── Thought Index & Analytics ──────────────────────────────────────────
+  // ── Thought Index & Analytics (어뷰징 방지 강화) ─────────────────────────
 
   const editedCount = blocks.filter((b) => b.hasEdited).length
   const editRatio = blocks.length > 0 ? Math.round((editedCount / blocks.length) * 100) : 0
-  const canvasMin = Math.floor(canvasTimeRef.current / 60)
-  const lexicalDiversity = calculateTTR(answers)
+  
+  // 실질 고민 시간 (전체 체류 시간 - 감지된 유휴 유령 시간)
+  const realDurationSeconds = Math.max(0, canvasTimeRef.current - canvasIdleRef.current)
+  const canvasMin = Math.floor(realDurationSeconds / 60)
+  
+  // 텍스트 볼륨이 가중된 정교한 TTR
+  const lexicalDiversity = calculateWeightedTTR(answers)
 
-  // Thought Index 계산
-  // 1) 체류 시간 (최대 30점): 5분(300초) 충족 시 30점 만점
-  const timeScore = Math.min(30, Math.round((canvasTimeRef.current / 300) * 30))
+  // 1) 실질 체류 시간 (최대 30점): 실질 고민 시간 5분(300초) 이상 시 30점 만점
+  const timeScore = Math.min(30, Math.round((realDurationSeconds / 300) * 30))
   // 2) 편집 비율 (최대 30점): 40% 이상 직접 수정 시 30점 만점
   const editScore = Math.min(30, Math.round((editRatio / 40) * 30))
   // 3) 재배치 빈도 (최대 20점): 3회 이상 순서 섞었을 시 20점 만점
   const rearrangeScore = Math.min(20, Math.round((rearrangeCount / 3) * 20))
-  // 4) 어휘 다양성 지표 (최대 20점): TTR * 20
+  // 4) 어휘 다양성 지표 (최대 20점): 보정 TTR * 20
   const diversityScore = Math.round(lexicalDiversity * 20)
 
   const thoughtIndex = Math.min(100, timeScore + editScore + rearrangeScore + diversityScore)
 
-  // Markdown Report Export
+  // Markdown Report Export (접속사 흐름 적용)
   function handleExportMarkdown() {
     const templateLabel = DOMAIN_TEMPLATES.find(d => d.id === domain)?.label || ""
     const dateStr = new Date().toLocaleDateString("ko-KR", { year: "numeric", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit" })
@@ -666,9 +745,15 @@ export default function Home() {
       })
       .join("\n")
 
-    const blocksText = blocks
-      .map((b, i) => `### ${i + 1}. [${CARD_LABELS[b.type]}] ${b.hasEdited ? "✍️ 수정됨" : "🔒 원본보존"}\n\n${b.content}`)
-      .join("\n\n")
+    let essayFlowText = ""
+    blocks.forEach((b, i) => {
+      if (i > 0) {
+        const prev = blocks[i - 1]
+        const transition = getTransition(prev.type, b.type)
+        essayFlowText += `\n\n*(${transition})*\n\n`
+      }
+      essayFlowText += `**[${CARD_LABELS[b.type]}]** ${b.content}`
+    })
 
     const markdownContent = `# 📝 Proof of Thought (사고 과정 증명서)
     
@@ -681,10 +766,10 @@ export default function Home() {
 ## 📊 오리지널리티 & 사유 지표 (Thought Metrics)
 
 - **종합 사유 점수 (Thought Index)**: **${thoughtIndex}점** / 100점
-  - *체류 시간 점수*: ${timeScore}점 (실제 조립 시간: ${canvasMin}분 ${canvasTimeRef.current % 60}초)
+  - *실질 고민 시간 점수*: ${timeScore}점 (순수 고민 시간: ${canvasMin}분 ${realDurationSeconds % 60}초 / 휴면 시간: ${Math.floor(canvasIdleRef.current / 60)}분 ${canvasIdleRef.current % 60}초 제외)
   - *논리 조립/수정 점수*: ${editScore}점 (수정 비율: ${editRatio}%)
   - *재배치 점수*: ${rearrangeScore}점 (재배치 횟수: ${rearrangeCount}회)
-  - *어휘 다양성 점수*: ${diversityScore}점 (TTR: ${lexicalDiversity})
+  - *어휘 다양성 점수*: ${diversityScore}점 (가중 TTR: ${lexicalDiversity})
 
 ---
 
@@ -693,8 +778,8 @@ ${logsText}
 
 ---
 
-## 🧩 최종 조립된 논리 구조 (Final Logic Scaffold)
-${blocksText}
+## 🧩 완성된 논리적 에세이 흐름 (Final Logical Essay Flow)
+${essayFlowText}
 `
     const blob = new Blob([markdownContent], { type: "text/markdown;charset=utf-8;" })
     const url = URL.createObjectURL(blob)
@@ -852,31 +937,43 @@ ${blocksText}
                   아래 질문에 답변하면서 당신의 고유 어휘(전문 키워드 등)를 자유롭게 섞어 써 보세요.
                 </p>
 
-                {questions.map((q, i) => (
-                  <div key={i} className="space-y-2">
-                    <div className="rounded-lg border bg-muted/25 px-4 py-3">
-                      <p className="text-sm leading-relaxed">
-                        <span className="mr-2 font-semibold text-muted-foreground">Q{i + 1}.</span>
-                        {q}
-                      </p>
+                {questions.map((q, i) => {
+                  const answerLen = (answers[i] ?? "").length
+                  const isAnswerWeak = answerLen > 0 && answerLen < 15
+                  return (
+                    <div key={i} className="space-y-2">
+                      <div className="rounded-lg border bg-muted/25 px-4 py-3">
+                        <p className="text-sm leading-relaxed">
+                          <span className="mr-2 font-semibold text-muted-foreground">Q{i + 1}.</span>
+                          {q}
+                        </p>
+                      </div>
+                      <form
+                        className="relative rounded-lg border bg-background p-1 focus-within:ring-1 focus-within:ring-ring"
+                        onSubmit={(e) => e.preventDefault()}
+                      >
+                        <ChatInput
+                          value={answers[i] ?? ""}
+                          onChange={(e) => {
+                            const next = [...answers]
+                            next[i] = e.target.value
+                            setAnswers(next)
+                          }}
+                          placeholder="머릿속에 맴도는 구어체 단어들도 모두 좋습니다. 편하게 답해 보세요..."
+                          className="min-h-12 resize-none rounded-lg border-0 bg-background p-3 shadow-none focus-visible:ring-0"
+                        />
+                      </form>
+                      
+                      {/* 실시간 퀄리티 게이트 피드백 가이드 */}
+                      {isAnswerWeak && (
+                        <p className="text-[11px] text-amber-600 flex items-center gap-1 px-1">
+                          <Info className="size-3" />
+                          생각의 재료가 조금 더 풍성해지도록 전문 용어나 세부 사항을 10자 이상 덧붙여 보세요!
+                        </p>
+                      )}
                     </div>
-                    <form
-                      className="relative rounded-lg border bg-background p-1 focus-within:ring-1 focus-within:ring-ring"
-                      onSubmit={(e) => e.preventDefault()}
-                    >
-                      <ChatInput
-                        value={answers[i] ?? ""}
-                        onChange={(e) => {
-                          const next = [...answers]
-                          next[i] = e.target.value
-                          setAnswers(next)
-                        }}
-                        placeholder="머릿속에 맴도는 구어체 단어들도 모두 좋습니다. 편하게 답해 보세요..."
-                        className="min-h-12 resize-none rounded-lg border-0 bg-background p-3 shadow-none focus-visible:ring-0"
-                      />
-                    </form>
-                  </div>
-                ))}
+                  )
+                })}
 
                 {/* Build Blocks CTA */}
                 <div className="space-y-2 pt-2">
@@ -941,11 +1038,11 @@ ${blocksText}
                 {editRatio >= 40 && " ✓"}
               </span>
               <span>
-                캔버스 체류{" "}
-                <span className={`font-semibold tabular-nums ${step2Seconds >= 300 ? "text-emerald-600 font-bold" : "text-foreground"}`}>
-                  {String(Math.floor(step2Seconds / 60)).padStart(2, "0")}:{String(step2Seconds % 60).padStart(2, "0")}
+                순수 고민{" "}
+                <span className={`font-semibold tabular-nums ${canvasMin >= 5 ? "text-emerald-600 font-bold" : "text-foreground"}`}>
+                  {String(Math.floor(realDurationSeconds / 60)).padStart(2, "0")}:{String(realDurationSeconds % 60).padStart(2, "0")}
                 </span>
-                {step2Seconds >= 300 && " ✓"}
+                {canvasMin >= 5 && " ✓"}
               </span>
             </div>
 
@@ -1057,18 +1154,18 @@ ${blocksText}
                 goal="5분 이상"
                 met={canvasMin >= 5}
                 unit="분"
-                description="구조 조립 및 논리 캔버스에서의 활성 체류 시간"
+                description={`순수 조립 조작을 진행한 시간 (감지된 무반응 휴면 시간 ${Math.floor(canvasIdleRef.current / 60)}분 ${canvasIdleRef.current % 60}초 차감 완료)`}
               />
               <MetricRow
-                label="어휘 다양성 지표 (TTR)"
+                label="보정 어휘 다양성 지표 (TTR)"
                 value={lexicalDiversity}
                 goal="0.4 이상"
                 met={lexicalDiversity >= 0.4}
-                description="답변 내 어휘 중복을 피하고 고유 명사/전문 어휘를 다각도로 적용한 수치"
+                description="답변 어휘 중복을 피하고 고유 단어를 적용한 정도 (텍스트 미달 패널티 보정 적용)"
               />
             </div>
 
-            {/* 히스토리 마일스톤 흐름 (History Map) */}
+            {/* 히스토리 마일스톤 흐름 */}
             <div className="space-y-3">
               <p className="text-sm font-semibold flex items-center gap-1.5">
                 <Clock className="size-4 text-indigo-600" />
@@ -1079,7 +1176,6 @@ ${blocksText}
                   const logDate = new Date(log.timestamp)
                   return (
                     <div key={i} className="relative text-xs">
-                      {/* Timeline dot */}
                       <span className="absolute -left-[21px] top-1.5 flex h-2 w-2 rounded-full bg-indigo-500 ring-4 ring-background" />
                       <div className="flex items-center gap-2 mb-0.5">
                         <span className="font-semibold text-slate-700 dark:text-slate-300">
@@ -1096,30 +1192,58 @@ ${blocksText}
               </div>
             </div>
 
-            {/* 완성된 블록 목록 */}
+            {/* 에세이 논리 브릿지 뷰 (접속사 추천 흐름) */}
             <div className="space-y-3">
               <p className="text-sm font-semibold flex items-center gap-1.5">
                 <Award className="size-4 text-emerald-600" />
-                독창적으로 완성된 최종 논리 에세이 구조
+                완성된 논리 에세이 개요서 (접속 가이드라인 포함)
               </p>
+              
+              <div className="rounded-xl border border-dashed border-emerald-200 bg-emerald-50/20 p-4 text-xs text-emerald-800 space-y-1 mb-2">
+                <p className="font-bold flex items-center gap-1">
+                  <Info className="size-3.5" />
+                  글쓰기 꿀팁:
+                </p>
+                <p className="leading-relaxed">
+                  각 카드 사이에 어울리는 접속 지문을 자동으로 배치했습니다. 이 연결 지시어를 활용해 카드 텍스트를 결합하면 논리 정연한 에세이 초안이 완성됩니다!
+                </p>
+              </div>
+
               <div className="space-y-2.5">
-                {blocks.map((block, i) => (
-                  <div
-                    key={block.id}
-                    className={`rounded-xl border-l-4 border border-border/60 bg-background p-4 ${CARD_COLORS[block.type]}`}
-                  >
-                    <div className="flex items-center gap-2 mb-2">
-                      <span className="text-xs text-muted-foreground font-medium tabular-nums">{i + 1}.</span>
-                      <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold tracking-wide ${BADGE_COLORS[block.type]}`}>
-                        {CARD_LABELS[block.type]}
-                      </span>
-                      {block.hasEdited && (
-                        <span className="ml-auto text-[10px] text-emerald-600 font-medium">직접 수정</span>
+                {blocks.map((block, i) => {
+                  const showTransition = i > 0
+                  const prevBlock = showTransition ? blocks[i - 1] : null
+                  const transitionWord = prevBlock ? getTransition(prevBlock.type, block.type) : ""
+
+                  return (
+                    <div key={block.id} className="space-y-2.5">
+                      {showTransition && (
+                        <div className="flex items-center gap-2 px-6">
+                          <span className="h-px flex-1 bg-gradient-to-r from-transparent via-emerald-200 to-transparent" />
+                          <span className="bg-emerald-100 text-emerald-800 text-[10px] font-semibold px-2 py-0.5 rounded-full dark:bg-emerald-950 dark:text-emerald-300">
+                            👉 {transitionWord}
+                          </span>
+                          <span className="h-px flex-1 bg-gradient-to-r from-transparent via-emerald-200 to-transparent" />
+                        </div>
                       )}
+
+                      <div
+                        className={`rounded-xl border-l-4 border border-border/60 bg-background p-4 ${CARD_COLORS[block.type]}`}
+                      >
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className="text-xs text-muted-foreground font-medium tabular-nums">{i + 1}.</span>
+                          <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold tracking-wide ${BADGE_COLORS[block.type]}`}>
+                            {CARD_LABELS[block.type]}
+                          </span>
+                          {block.hasEdited && (
+                            <span className="ml-auto text-[10px] text-emerald-600 font-medium">직접 수정</span>
+                          )}
+                        </div>
+                        <p className="text-sm leading-relaxed whitespace-pre-wrap">{block.content}</p>
+                      </div>
                     </div>
-                    <p className="text-sm leading-relaxed whitespace-pre-wrap">{block.content}</p>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             </div>
 
@@ -1151,12 +1275,12 @@ ${blocksText}
                 {copied ? (
                   <>
                     <Check className="size-4 text-emerald-500" />
-                    클립보드 복사 완료
+                    연결 흐름 복사 완료
                   </>
                 ) : (
                   <>
                     <Copy className="size-4" />
-                    최종 에세이 구조 텍스트 복사
+                    접속사 결합 흐름 전체 복사
                   </>
                 )}
               </Button>
