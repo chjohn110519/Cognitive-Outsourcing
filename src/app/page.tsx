@@ -34,46 +34,95 @@ import {
   Check,
   RefreshCw,
   Pencil,
+  Plus,
+  Trash2,
+  Lock,
+  Unlock,
+  Eye,
+  Download,
+  Calendar,
+  Clock,
+  Award,
+  Zap,
 } from "lucide-react"
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
-type CardType = "claim" | "evidence" | "counter" | "example"
+type CardType =
+  | "claim"
+  | "evidence"
+  | "counter"
+  | "example"
+  | "methodology"
+  | "problem"
+  | "solution"
+  | "businessModel"
+  | "reflection"
 
 interface Block {
   id: string
   type: CardType
   content: string
-  originalContent: string // AI가 생성한 원본 — 변하지 않음
-  hasEdited: boolean      // 사용자가 직접 수정했는지
+  originalContent: string // AI가 처음 가공한 원본
+  hasEdited: boolean      // 수동 수정 여부
+  sourceQIndex?: number   // 원본 질문 인덱스 (0, 1, 2)
+}
+
+interface HistoryEvent {
+  timestamp: number
+  action: "init" | "rearrange" | "edit" | "add" | "delete" | "change_type"
+  description: string
 }
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
 const CARD_LABELS: Record<CardType, string> = {
-  claim: "주장", evidence: "근거", counter: "반론", example: "사례",
+  claim: "주장",
+  evidence: "근거",
+  counter: "반론",
+  example: "사례",
+  methodology: "연구방법",
+  problem: "문제정의",
+  solution: "해결책",
+  businessModel: "비즈니스모델",
+  reflection: "성찰",
 }
 
 const CARD_COLORS: Record<CardType, string> = {
-  claim:    "border-l-blue-400 bg-blue-50/40",
-  evidence: "border-l-emerald-400 bg-emerald-50/40",
-  counter:  "border-l-amber-400 bg-amber-50/40",
-  example:  "border-l-violet-400 bg-violet-50/40",
+  claim: "border-l-blue-400 bg-blue-50/40 dark:bg-blue-950/20",
+  evidence: "border-l-emerald-400 bg-emerald-50/40 dark:bg-emerald-950/20",
+  counter: "border-l-amber-400 bg-amber-50/40 dark:bg-amber-950/20",
+  example: "border-l-violet-400 bg-violet-50/40 dark:bg-violet-950/20",
+  methodology: "border-l-indigo-400 bg-indigo-50/40 dark:bg-indigo-950/20",
+  problem: "border-l-rose-400 bg-rose-50/40 dark:bg-rose-950/20",
+  solution: "border-l-teal-400 bg-teal-50/40 dark:bg-teal-950/20",
+  businessModel: "border-l-orange-400 bg-orange-50/40 dark:bg-orange-950/20",
+  reflection: "border-l-pink-400 bg-pink-50/40 dark:bg-pink-950/20",
 }
 
 const BADGE_COLORS: Record<CardType, string> = {
-  claim:    "bg-blue-100 text-blue-700",
-  evidence: "bg-emerald-100 text-emerald-700",
-  counter:  "bg-amber-100 text-amber-700",
-  example:  "bg-violet-100 text-violet-700",
+  claim: "bg-blue-100 text-blue-700 dark:bg-blue-900/35 dark:text-blue-300",
+  evidence: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/35 dark:text-emerald-300",
+  counter: "bg-amber-100 text-amber-700 dark:bg-amber-900/35 dark:text-amber-300",
+  example: "bg-violet-100 text-violet-700 dark:bg-violet-900/35 dark:text-violet-300",
+  methodology: "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/35 dark:text-indigo-300",
+  problem: "bg-rose-100 text-rose-700 dark:bg-rose-900/35 dark:text-rose-300",
+  solution: "bg-teal-100 text-teal-700 dark:bg-teal-900/35 dark:text-teal-300",
+  businessModel: "bg-orange-100 text-orange-700 dark:bg-orange-900/35 dark:text-orange-300",
+  reflection: "bg-pink-100 text-pink-700 dark:bg-pink-900/35 dark:text-pink-300",
 }
 
-const EXAMPLE_TOPICS = [
-  "AI와 교육의 미래",
-  "기후변화와 개인의 책임",
-  "SNS와 자존감의 관계",
-  "대학이 꼭 필요한가",
+const DOMAIN_TEMPLATES = [
+  { id: "essay" as const, label: "자유/인문 에세이", emoji: "✍️", types: ["claim", "reflection", "example", "counter"] as CardType[] },
+  { id: "academic" as const, label: "학술/연구 보고서", emoji: "🎓", types: ["claim", "evidence", "counter", "methodology"] as CardType[] },
+  { id: "startup" as const, label: "스타트업 IR/사업계획서", emoji: "🚀", types: ["problem", "solution", "evidence", "businessModel"] as CardType[] },
 ]
+
+const EXAMPLE_TOPICS: Record<string, string[]> = {
+  essay: ["SNS와 자존감의 관계", "대학이 꼭 필요한가"],
+  academic: ["AI와 교육의 미래: 기계 학습 도입의 타당성", "기후변화와 개인의 실질적 책임에 대한 메타분석"],
+  startup: ["Z세대를 위한 개인 맞춤형 Fashion RecSys 플랫폼", "로컬 아티스트를 위한 AI Music Video 자동 생성 및 퍼블리싱 솔루션"],
+}
 
 const LOADING_Q_MSGS = [
   "당신의 생각을 꺼낼 질문을 만들고 있어요...",
@@ -110,13 +159,39 @@ function useTimer(running: boolean) {
   return seconds
 }
 
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+// 어휘 다양성 지표 TTR (Type-Token Ratio) 계산
+function calculateTTR(texts: string[]): number {
+  const fullText = texts.join(" ").trim()
+  if (!fullText) return 0
+  const tokens = fullText.toLowerCase().split(/[\s,.\?\!\'\"]+/).filter(w => w.length > 0)
+  if (tokens.length === 0) return 0
+  const uniqueTokens = new Set(tokens)
+  return Math.round((uniqueTokens.size / tokens.length) * 100) / 100
+}
+
+// 중요 키워드 감지 (4글자 이상 한글 명사구 느낌 또는 영문/숫자 단어)
+function extractKeywords(text: string): string[] {
+  if (!text) return []
+  const cleanText = text.replace(/[.,\/#!$%\^&\*;:{}=\-_`~()?\"]/g, "")
+  const words = cleanText.split(/\s+/)
+  const keywords = words.filter(word => {
+    // 3자 이상의 단어 중 영문, 숫자 혹은 다소 긴 한글 단어를 키워드로 취급
+    const isEnglishOrNum = /^[a-zA-Z0-9]{2,}$/.test(word)
+    const isKoreanLong = /^[\uac00-\ud7a3]{3,}$/.test(word)
+    return isEnglishOrNum || isKoreanLong
+  })
+  return Array.from(new Set(keywords))
+}
+
 // ── Step Indicator ─────────────────────────────────────────────────────────
 
 function StepIndicator({ current }: { current: 1 | 2 | 3 }) {
   const steps = [
     { n: 1 as const, label: "질문 인출", icon: Sparkles },
     { n: 2 as const, label: "논리 조립", icon: LayoutGrid },
-    { n: 3 as const, label: "오리지널리티", icon: BarChart2 },
+    { n: 3 as const, label: "사고 증명서", icon: BarChart2 },
   ]
   return (
     <div className="flex items-center justify-center gap-1">
@@ -146,16 +221,29 @@ function StepIndicator({ current }: { current: 1 | 2 | 3 }) {
 
 // ── Sortable Card ──────────────────────────────────────────────────────────
 
+interface SortableCardProps {
+  block: Block
+  index: number
+  onEdit: (id: string, content: string) => void
+  onDelete: (id: string) => void
+  onChangeType: (id: string, type: CardType) => void
+  rawAnswers: string[]
+  rawQuestions: string[]
+  allowedTypes: CardType[]
+}
+
 function SortableCard({
   block,
   index,
   onEdit,
-}: {
-  block: Block
-  index: number
-  onEdit: (id: string, content: string) => void
-}) {
+  onDelete,
+  onChangeType,
+  rawAnswers,
+  rawQuestions,
+  allowedTypes,
+}: SortableCardProps) {
   const [focused, setFocused] = useState(false)
+  const [showOverlay, setShowOverlay] = useState(false)
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: block.id })
 
@@ -166,62 +254,133 @@ function SortableCard({
     zIndex: isDragging ? 50 : "auto",
   }
 
+  // Keyword Lock 감지
+  const sourceRawText = block.sourceQIndex !== undefined ? rawAnswers[block.sourceQIndex] : ""
+  const rawKeywords = extractKeywords(sourceRawText)
+  const lockedKeywords = rawKeywords.filter(kw => block.content.includes(kw))
+
   return (
     <div
       ref={setNodeRef}
       style={style}
-      className={`group flex items-start gap-3 rounded-xl border-l-4 border bg-background p-4 shadow-sm transition-shadow ${
+      className={`group flex flex-col gap-3 rounded-xl border-l-4 border bg-background p-4 shadow-sm transition-shadow ${
         CARD_COLORS[block.type]
       } ${isDragging ? "shadow-lg" : "hover:shadow-md"} ${
         focused ? "border-border" : "border-border/60"
       }`}
     >
-      {/* Drag Handle */}
-      <button
-        {...attributes}
-        {...listeners}
-        className="mt-1 cursor-grab touch-none text-muted-foreground/25 transition-colors group-hover:text-muted-foreground/50 active:cursor-grabbing"
-        aria-label="드래그하여 순서 변경"
-      >
-        <GripVertical className="size-4" />
-      </button>
+      <div className="flex items-start gap-3 w-full">
+        {/* Drag Handle */}
+        <button
+          {...attributes}
+          {...listeners}
+          className="mt-1 cursor-grab touch-none text-muted-foreground/25 transition-colors group-hover:text-muted-foreground/50 active:cursor-grabbing"
+          aria-label="드래그하여 순서 변경"
+        >
+          <GripVertical className="size-4" />
+        </button>
 
-      <div className="flex-1 space-y-2 min-w-0">
-        {/* Header */}
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-medium text-muted-foreground tabular-nums">
-            {index + 1}
-          </span>
-          <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold tracking-wide ${BADGE_COLORS[block.type]}`}>
-            {CARD_LABELS[block.type]}
-          </span>
-          {block.hasEdited && (
-            <span className="ml-auto flex items-center gap-1 text-[10px] text-emerald-600 font-medium">
-              <Pencil className="size-2.5" />
-              직접 수정됨
+        <div className="flex-1 space-y-2 min-w-0">
+          {/* Header */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs font-medium text-muted-foreground tabular-nums">
+              {index + 1}
             </span>
-          )}
+            
+            {/* Block Type Select */}
+            <select
+              value={block.type}
+              onChange={(e) => onChangeType(block.id, e.target.value as CardType)}
+              className={`rounded-full px-2 py-0.5 text-[10px] font-semibold tracking-wide border-0 cursor-pointer focus:ring-1 focus:ring-ring ${BADGE_COLORS[block.type]}`}
+            >
+              {allowedTypes.map((t) => (
+                <option key={t} value={t}>
+                  {CARD_LABELS[t]}
+                </option>
+              ))}
+            </select>
+
+            {/* Keyword Lock Status Indicator */}
+            {lockedKeywords.length > 0 && (
+              <span className="flex items-center gap-0.5 rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                <Lock className="size-2.5 text-blue-500" />
+                Keyword Lock ({lockedKeywords.length})
+              </span>
+            )}
+
+            {block.hasEdited && (
+              <span className="ml-auto flex items-center gap-1 text-[10px] text-emerald-600 font-medium">
+                <Pencil className="size-2.5" />
+                직접 수정됨
+              </span>
+            )}
+          </div>
+
+          {/* Editable Content */}
+          <div className={`relative rounded-md transition-colors ${
+            focused ? "bg-muted/40 ring-1 ring-border" : "hover:bg-muted/20"
+          }`}>
+            <textarea
+              value={block.content}
+              onChange={(e) => onEdit(block.id, e.target.value)}
+              onFocus={() => setFocused(true)}
+              onBlur={() => setFocused(false)}
+              className="w-full resize-none bg-transparent px-2 py-1.5 text-sm leading-relaxed text-foreground focus:outline-none"
+              rows={Math.max(2, Math.ceil(block.content.length / 55))}
+            />
+            {!focused && (
+              <span className="absolute right-2 top-1.5 text-[10px] text-muted-foreground/40 pointer-events-none">
+                클릭하여 편집
+              </span>
+            )}
+          </div>
         </div>
 
-        {/* Editable Content */}
-        <div className={`relative rounded-md transition-colors ${
-          focused ? "bg-muted/40 ring-1 ring-border" : "hover:bg-muted/20"
-        }`}>
-          <textarea
-            value={block.content}
-            onChange={(e) => onEdit(block.id, e.target.value)}
-            onFocus={() => setFocused(true)}
-            onBlur={() => setFocused(false)}
-            className="w-full resize-none bg-transparent px-2 py-1.5 text-sm leading-relaxed text-foreground focus:outline-none"
-            rows={Math.max(2, Math.ceil(block.content.length / 55))}
-          />
-          {!focused && (
-            <span className="absolute right-2 top-1.5 text-[10px] text-muted-foreground/40 pointer-events-none">
-              클릭하여 편집
-            </span>
-          )}
-        </div>
+        {/* Delete button */}
+        <button
+          onClick={() => onDelete(block.id)}
+          className="mt-1 text-muted-foreground/30 hover:text-destructive/80 transition-colors"
+          title="블록 삭제"
+        >
+          <Trash2 className="size-4" />
+        </button>
       </div>
+
+      {/* Keyword Lock Highlighting */}
+      {lockedKeywords.length > 0 && (
+        <div className="flex flex-wrap gap-1 items-center px-7 text-[10px] text-muted-foreground">
+          <span className="text-slate-400">보존된 키워드:</span>
+          {lockedKeywords.map((kw, i) => (
+            <span key={i} className="bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 px-1 rounded border border-slate-200/50">
+              {kw}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Vibe Preserving Overlay Button & View */}
+      {block.sourceQIndex !== undefined && (
+        <div className="px-7">
+          <button
+            onClick={() => setShowOverlay(!showOverlay)}
+            className="flex items-center gap-1 text-[10px] text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition-colors"
+          >
+            <Eye className="size-3" />
+            {showOverlay ? "원본 답변 가리기" : "원본 답변 대조 (Vibe Check)"}
+          </button>
+
+          {showOverlay && (
+            <div className="mt-2 rounded-lg border border-slate-200/60 bg-slate-50/60 p-2.5 text-xs text-slate-600 dark:border-slate-800 dark:bg-slate-900/40 dark:text-slate-400 space-y-1">
+              <p className="font-semibold text-[10px] text-slate-400">
+                [Q] {rawQuestions[block.sourceQIndex]}
+              </p>
+              <p className="italic leading-relaxed whitespace-pre-wrap">
+                "{sourceRawText || "(답변 없음)"}"
+              </p>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -234,18 +393,21 @@ function MetricRow({
   goal,
   met,
   unit = "",
+  description,
 }: {
   label: string
-  value: number
+  value: number | string
   goal: string
   met: boolean
   unit?: string
+  description?: string
 }) {
   return (
     <div className="flex items-center justify-between py-3 border-b border-border/50 last:border-0">
       <div>
         <p className="text-sm font-medium">{label}</p>
         <p className="text-xs text-muted-foreground">목표: {goal}</p>
+        {description && <p className="text-[11px] text-slate-400">{description}</p>}
       </div>
       <div className="flex items-center gap-2">
         <span className="text-lg font-bold tabular-nums">
@@ -264,6 +426,7 @@ function MetricRow({
 
 export default function Home() {
   const [step, setStep] = useState<1 | 2 | 3>(1)
+  const [domain, setDomain] = useState<"essay" | "academic" | "startup">("essay")
 
   // Step 1
   const [topic, setTopic] = useState("")
@@ -277,6 +440,7 @@ export default function Home() {
   // Step 2
   const [blocks, setBlocks] = useState<Block[]>([])
   const [rearrangeCount, setRearrangeCount] = useState(0)
+  const [historyLogs, setHistoryLogs] = useState<HistoryEvent[]>([])
   const step2Seconds = useTimer(step === 2)
 
   // Step 3
@@ -286,6 +450,12 @@ export default function Home() {
   // Loading messages
   const loadingQMsg = useRotatingMsg(LOADING_Q_MSGS, isLoadingQ)
   const loadingBMsg = useRotatingMsg(LOADING_B_MSGS, isLoadingB)
+
+  // ── Logging Helper ─────────────────────────────────────────────────────
+  
+  const addLog = useCallback((action: HistoryEvent["action"], description: string) => {
+    setHistoryLogs((prev) => [...prev, { timestamp: Date.now(), action, description }])
+  }, [])
 
   // Save canvas time when leaving Step 2
   useEffect(() => {
@@ -308,16 +478,18 @@ export default function Home() {
     setRetryFn(null)
     setQuestions([])
     setAnswers([])
+    setHistoryLogs([])
     try {
       const res = await fetch("/api/generate-questions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ topic }),
+        body: JSON.stringify({ topic, domain }),
       })
       if (!res.ok) throw new Error("질문 생성에 실패했습니다.")
       const data = await res.json()
       setQuestions(data.questions)
       setAnswers(data.questions.map(() => ""))
+      addLog("init", `소크라테스식 질문 ${data.questions.length}개 생성됨`)
     } catch (err) {
       const msg = err instanceof Error ? err.message : "오류가 발생했습니다."
       setError(msg)
@@ -325,7 +497,7 @@ export default function Home() {
     } finally {
       setIsLoadingQ(false)
     }
-  }, [topic])
+  }, [topic, domain, addLog])
 
   async function handleGenerateQuestions(e: React.FormEvent) {
     e.preventDefault()
@@ -341,7 +513,7 @@ export default function Home() {
       const res = await fetch("/api/classify-blocks", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ topic, questions, answers }),
+        body: JSON.stringify({ topic, questions, answers, domain }),
       })
       if (!res.ok) throw new Error("블록 생성에 실패했습니다.")
       const data = await res.json()
@@ -351,12 +523,14 @@ export default function Home() {
           id: b.id,
           type: b.type,
           content: b.content,
-          originalContent: b.content, // AI 원본 저장
+          originalContent: b.content,
           hasEdited: false,
+          sourceQIndex: b.sourceQIndex,
         }))
       )
       setRearrangeCount(0)
       setStep(2)
+      addLog("init", `AI 구조화 블록 ${data.blocks.length}개 조립 완료`)
     } catch (err) {
       const msg = err instanceof Error ? err.message : "오류가 발생했습니다."
       setError(msg)
@@ -364,7 +538,7 @@ export default function Home() {
     } finally {
       setIsLoadingB(false)
     }
-  }, [topic, questions, answers])
+  }, [topic, questions, answers, domain, addLog])
 
   function handleDragEnd(event: DragEndEvent) {
     const { active, over } = event
@@ -372,6 +546,9 @@ export default function Home() {
       setBlocks((prev) => {
         const oldIdx = prev.findIndex((b) => b.id === active.id)
         const newIdx = prev.findIndex((b) => b.id === over.id)
+        const activeBlock = prev[oldIdx]
+        const overBlock = prev[newIdx]
+        addLog("rearrange", `블록 순서 변경: #${oldIdx + 1}(${CARD_LABELS[activeBlock.type]}) -> #${newIdx + 1}(${CARD_LABELS[overBlock.type]})`)
         return arrayMove(prev, oldIdx, newIdx)
       })
       setRearrangeCount((c) => c + 1)
@@ -380,8 +557,55 @@ export default function Home() {
 
   function handleEditBlock(id: string, content: string) {
     setBlocks((prev) =>
-      prev.map((b) => b.id === id ? { ...b, content, hasEdited: true } : b)
+      prev.map((b) => {
+        if (b.id === id) {
+          if (!b.hasEdited) {
+            addLog("edit", `블록 #${prev.findIndex(x => x.id === id) + 1} (${CARD_LABELS[b.type]}) 내용 수정 시작`)
+          }
+          return { ...b, content, hasEdited: true }
+        }
+        return b
+      })
     )
+  }
+
+  function handleDeleteBlock(id: string) {
+    setBlocks((prev) => {
+      const targetIdx = prev.findIndex((b) => b.id === id)
+      if (targetIdx !== -1) {
+        addLog("delete", `블록 #${targetIdx + 1} (${CARD_LABELS[prev[targetIdx].type]}) 삭제`)
+      }
+      return prev.filter((b) => b.id !== id)
+    })
+  }
+
+  function handleChangeBlockType(id: string, type: CardType) {
+    setBlocks((prev) =>
+      prev.map((b, idx) => {
+        if (b.id === id) {
+          addLog("change_type", `블록 #${idx + 1} 타입 변경: ${CARD_LABELS[b.type]} -> ${CARD_LABELS[type]}`)
+          return { ...b, type }
+        }
+        return b
+      })
+    )
+  }
+
+  function handleAddBlock() {
+    const currentTypes = DOMAIN_TEMPLATES.find(d => d.id === domain)?.types || ["claim"]
+    const defaultType = currentTypes[0]
+    const newBlock: Block = {
+      id: `custom-${Date.now()}`,
+      type: defaultType,
+      content: "새로운 생각을 적어보세요...",
+      originalContent: "",
+      hasEdited: true,
+    }
+    setBlocks((prev) => {
+      const next = [...prev, newBlock]
+      addLog("add", `사용자 커스텀 블록 추가 (기본 타입: ${CARD_LABELS[defaultType]})`)
+      return next
+    })
   }
 
   function handleGoToStep3() {
@@ -397,9 +621,11 @@ export default function Home() {
     setBlocks([])
     setError("")
     setRetryFn(null)
+    setHistoryLogs([])
     canvasTimeRef.current = 0
   }
 
+  // 복사
   function handleCopy() {
     const text = blocks
       .map((b, i) => `${i + 1}. [${CARD_LABELS[b.type]}] ${b.content}`)
@@ -409,22 +635,87 @@ export default function Home() {
     setTimeout(() => setCopied(false), 2000)
   }
 
-  // ── Metrics ────────────────────────────────────────────────────────────
+  // ── Thought Index & Analytics ──────────────────────────────────────────
 
   const editedCount = blocks.filter((b) => b.hasEdited).length
   const editRatio = blocks.length > 0 ? Math.round((editedCount / blocks.length) * 100) : 0
   const canvasMin = Math.floor(canvasTimeRef.current / 60)
-  const canvasSec = canvasTimeRef.current % 60
+  const lexicalDiversity = calculateTTR(answers)
+
+  // Thought Index 계산
+  // 1) 체류 시간 (최대 30점): 5분(300초) 충족 시 30점 만점
+  const timeScore = Math.min(30, Math.round((canvasTimeRef.current / 300) * 30))
+  // 2) 편집 비율 (최대 30점): 40% 이상 직접 수정 시 30점 만점
+  const editScore = Math.min(30, Math.round((editRatio / 40) * 30))
+  // 3) 재배치 빈도 (최대 20점): 3회 이상 순서 섞었을 시 20점 만점
+  const rearrangeScore = Math.min(20, Math.round((rearrangeCount / 3) * 20))
+  // 4) 어휘 다양성 지표 (최대 20점): TTR * 20
+  const diversityScore = Math.round(lexicalDiversity * 20)
+
+  const thoughtIndex = Math.min(100, timeScore + editScore + rearrangeScore + diversityScore)
+
+  // Markdown Report Export
+  function handleExportMarkdown() {
+    const templateLabel = DOMAIN_TEMPLATES.find(d => d.id === domain)?.label || ""
+    const dateStr = new Date().toLocaleDateString("ko-KR", { year: "numeric", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit" })
+    
+    const logsText = historyLogs
+      .map((log) => {
+        const time = new Date(log.timestamp).toLocaleTimeString("ko-KR", { hour12: false })
+        return `- [${time}] **${log.action.toUpperCase()}**: ${log.description}`
+      })
+      .join("\n")
+
+    const blocksText = blocks
+      .map((b, i) => `### ${i + 1}. [${CARD_LABELS[b.type]}] ${b.hasEdited ? "✍️ 수정됨" : "🔒 원본보존"}\n\n${b.content}`)
+      .join("\n\n")
+
+    const markdownContent = `# 📝 Proof of Thought (사고 과정 증명서)
+    
+- **작성일시**: ${dateStr}
+- **글의 목적 / 장르**: ${templateLabel}
+- **주제**: ${topic}
+
+---
+
+## 📊 오리지널리티 & 사유 지표 (Thought Metrics)
+
+- **종합 사유 점수 (Thought Index)**: **${thoughtIndex}점** / 100점
+  - *체류 시간 점수*: ${timeScore}점 (실제 조립 시간: ${canvasMin}분 ${canvasTimeRef.current % 60}초)
+  - *논리 조립/수정 점수*: ${editScore}점 (수정 비율: ${editRatio}%)
+  - *재배치 점수*: ${rearrangeScore}점 (재배치 횟수: ${rearrangeCount}회)
+  - *어휘 다양성 점수*: ${diversityScore}점 (TTR: ${lexicalDiversity})
+
+---
+
+## 🗺️ 사고 과정 히스토리 맵 (Milestones)
+${logsText}
+
+---
+
+## 🧩 최종 조립된 논리 구조 (Final Logic Scaffold)
+${blocksText}
+`
+    const blob = new Blob([markdownContent], { type: "text/markdown;charset=utf-8;" })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement("a")
+    link.href = url
+    link.setAttribute("download", `Proof_of_Thought_${topic.replace(/\s+/g, "_")}.md`)
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+  }
 
   // ── Render ─────────────────────────────────────────────────────────────
 
+  const allowedTypes = DOMAIN_TEMPLATES.find((d) => d.id === domain)?.types || ["claim", "evidence", "counter", "example"]
+
   return (
     <div className="flex min-h-screen flex-col bg-background">
-
       {/* ── Header ── */}
-      <header className="sticky top-0 z-20 border-b border-border/50 bg-background/80 backdrop-blur-sm">
+      <header className="sticky top-0 z-20 border-b border-border/50 bg-background/80 backdrop-blur-sm no-print">
         <div className="mx-auto flex max-w-2xl items-center justify-between px-4 py-3">
-          <span className="text-sm font-semibold tracking-tight">Assemble</span>
+          <span className="text-sm font-semibold tracking-tight">Assemble Scaffolder</span>
           <StepIndicator current={step} />
           <div className="w-16 flex justify-end">
             {step > 1 && (
@@ -445,17 +736,40 @@ export default function Home() {
         {step === 1 && (
           <div key="step1" className="step-fade-in space-y-6">
 
-            {/* Hero (질문 없을 때만) */}
+            {/* Hero */}
             {questions.length === 0 && (
               <div className="py-10 text-center space-y-3">
                 <h1 className="text-2xl font-semibold tracking-tight">
                   오늘 무엇을 생각해볼까요?
                 </h1>
                 <p className="text-sm text-muted-foreground leading-relaxed">
-                  AI가 답을 주는 대신, 당신의 생각을 함께 꺼냅니다.
+                  AI가 답을 다 주는 대필 유혹 대신, 당신 내부의 독창적 생각을 끄집어냅니다.
                   <br />
-                  주제를 입력하면 소크라테스식 질문 3개를 드립니다.
+                  장르를 선택하고 주제를 입력하면 맞춤형 소크라테스식 질문이 제공됩니다.
                 </p>
+              </div>
+            )}
+
+            {/* Domain Template Selector */}
+            {questions.length === 0 && (
+              <div className="space-y-2">
+                <p className="text-xs font-medium text-muted-foreground text-center">글의 목적 (도메인)</p>
+                <div className="grid grid-cols-3 gap-2">
+                  {DOMAIN_TEMPLATES.map((tmpl) => (
+                    <button
+                      key={tmpl.id}
+                      onClick={() => setDomain(tmpl.id)}
+                      className={`flex flex-col items-center justify-center rounded-xl border p-3 text-center transition-all ${
+                        domain === tmpl.id
+                          ? "border-primary bg-primary/5 ring-1 ring-primary"
+                          : "border-border hover:bg-muted"
+                      }`}
+                    >
+                      <span className="text-lg mb-1">{tmpl.emoji}</span>
+                      <span className="text-xs font-semibold">{tmpl.label}</span>
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
 
@@ -467,7 +781,7 @@ export default function Home() {
               <ChatInput
                 value={topic}
                 onChange={(e) => setTopic(e.target.value)}
-                placeholder="과제 주제를 입력하세요..."
+                placeholder="어떤 논제나 아이디어로 글을 시작할까요?..."
                 className="min-h-12 resize-none rounded-lg border-0 bg-background p-3 shadow-none focus-visible:ring-0"
                 disabled={isLoadingQ}
               />
@@ -489,7 +803,7 @@ export default function Home() {
                     <Loader2 className="size-3.5 animate-spin" />
                   ) : (
                     <>
-                      질문 받기
+                      질문 유도받기
                       <CornerDownLeft className="size-3.5" />
                     </>
                   )}
@@ -500,9 +814,9 @@ export default function Home() {
             {/* 예시 주제 칩 */}
             {questions.length === 0 && (
               <div className="space-y-2">
-                <p className="text-xs text-muted-foreground text-center">또는 예시 주제를 선택하세요</p>
+                <p className="text-xs text-muted-foreground text-center">선택한 장르의 예시 키워드</p>
                 <div className="flex flex-wrap justify-center gap-2">
-                  {EXAMPLE_TOPICS.map((t) => (
+                  {EXAMPLE_TOPICS[domain].map((t) => (
                     <button
                       key={t}
                       onClick={() => setTopic(t)}
@@ -535,7 +849,7 @@ export default function Home() {
             {questions.length > 0 && (
               <div className="step-fade-in space-y-6">
                 <p className="text-center text-sm text-muted-foreground">
-                  아래 질문에 떠오르는 대로 자유롭게 적어보세요.
+                  아래 질문에 답변하면서 당신의 고유 어휘(전문 키워드 등)를 자유롭게 섞어 써 보세요.
                 </p>
 
                 {questions.map((q, i) => (
@@ -557,7 +871,7 @@ export default function Home() {
                           next[i] = e.target.value
                           setAnswers(next)
                         }}
-                        placeholder="당신의 생각을 적어보세요..."
+                        placeholder="머릿속에 맴도는 구어체 단어들도 모두 좋습니다. 편하게 답해 보세요..."
                         className="min-h-12 resize-none rounded-lg border-0 bg-background p-3 shadow-none focus-visible:ring-0"
                       />
                     </form>
@@ -580,13 +894,13 @@ export default function Home() {
                     ) : (
                       <>
                         <LayoutGrid className="size-4" />
-                        논리 블록으로 조립하기
+                        비파괴 논리 블록 조립하기
                       </>
                     )}
                   </Button>
                   {isLoadingB && (
                     <p className="text-center text-xs text-muted-foreground">
-                      잠시만요, 당신의 생각을 구조화하는 중입니다.
+                      당신의 구어체 뉘앙스와 전문 어휘(Keyword Lock)를 보존하며 카드를 생성하고 있습니다.
                     </p>
                   )}
                 </div>
@@ -602,33 +916,33 @@ export default function Home() {
             {/* Socratic 안내 */}
             <div className="rounded-xl border border-border/50 bg-muted/15 px-5 py-4 space-y-1.5">
               <p className="text-sm font-semibold">
-                어떤 블록이 독자를 가장 먼저 설득할 수 있을까요?
+                당신의 고유 뉘앙스가 100% 반영된 논리 캔버스입니다.
               </p>
               <p className="text-xs text-muted-foreground leading-relaxed">
-                드래그로 순서를 바꾸고, 블록을 클릭해 내용을 직접 수정해보세요.
-                당신이 배치하는 순서가 곧 당신의 논리입니다.
+                블록을 직접 수정하고, 카드의 종류를 변경하거나, 새로운 논증 블록을 수동으로 추가해보세요.
+                구어체 말투의 훼손도가 궁금하다면 <strong>원본 답변 대조 (Vibe Check)</strong> 버튼을 클릭하세요.
               </p>
             </div>
 
             {/* 실시간 진행 카운터 */}
-            <div className="flex items-center justify-between text-xs text-muted-foreground px-1">
+            <div className="flex items-center justify-between text-xs text-muted-foreground px-1 bg-slate-50 dark:bg-slate-900/60 p-2.5 rounded-lg border border-border/40">
               <span>
-                재배치{" "}
-                <span className={`font-semibold ${rearrangeCount >= 3 ? "text-emerald-600" : "text-foreground"}`}>
+                순서 조립{" "}
+                <span className={`font-semibold ${rearrangeCount >= 3 ? "text-emerald-600 font-bold" : "text-foreground"}`}>
                   {rearrangeCount}회
                 </span>
                 {rearrangeCount >= 3 && " ✓"}
               </span>
               <span>
-                수정된 블록{" "}
-                <span className={`font-semibold ${editRatio >= 40 ? "text-emerald-600" : "text-foreground"}`}>
-                  {editedCount}/{blocks.length}
+                직접 수정{" "}
+                <span className={`font-semibold ${editRatio >= 40 ? "text-emerald-600 font-bold" : "text-foreground"}`}>
+                  {editRatio}% ({editedCount}개)
                 </span>
                 {editRatio >= 40 && " ✓"}
               </span>
               <span>
-                체류{" "}
-                <span className={`font-semibold tabular-nums ${step2Seconds >= 300 ? "text-emerald-600" : "text-foreground"}`}>
+                캔버스 체류{" "}
+                <span className={`font-semibold tabular-nums ${step2Seconds >= 300 ? "text-emerald-600 font-bold" : "text-foreground"}`}>
                   {String(Math.floor(step2Seconds / 60)).padStart(2, "0")}:{String(step2Seconds % 60).padStart(2, "0")}
                 </span>
                 {step2Seconds >= 300 && " ✓"}
@@ -652,11 +966,29 @@ export default function Home() {
                       block={block}
                       index={i}
                       onEdit={handleEditBlock}
+                      onDelete={handleDeleteBlock}
+                      onChangeType={handleChangeBlockType}
+                      rawAnswers={answers}
+                      rawQuestions={questions}
+                      allowedTypes={allowedTypes}
                     />
                   ))}
                 </div>
               </SortableContext>
             </DndContext>
+
+            {/* Add Custom Block Button */}
+            <div className="flex justify-center py-1">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleAddBlock}
+                className="gap-1.5 border-dashed border-slate-300 hover:border-slate-500 hover:bg-slate-50"
+              >
+                <Plus className="size-3.5" />
+                논리 카드 수동 추가
+              </Button>
+            </div>
 
             <Button
               onClick={handleGoToStep3}
@@ -664,31 +996,52 @@ export default function Home() {
               size="lg"
             >
               <BarChart2 className="size-4" />
-              오리지널리티 확인하기
+              Proof of Thought 증명서 발급하기
             </Button>
           </div>
         )}
 
         {/* ─── STEP 3 ──────────────────────────────────────────────────── */}
         {step === 3 && (
-          <div key="step3" className="step-fade-in space-y-6">
+          <div key="step3" className="step-fade-in space-y-6 print-full">
 
             {/* 오리지널리티 타이틀 */}
             <div className="space-y-1">
-              <h2 className="text-lg font-semibold">오리지널리티 핑거프린트</h2>
+              <span className="rounded-full bg-indigo-100 text-indigo-700 px-2.5 py-0.5 text-xs font-semibold dark:bg-indigo-900/35 dark:text-indigo-300">
+                Official Certification
+              </span>
+              <h2 className="text-2xl font-bold tracking-tight mt-1">Proof of Thought (사고 과정 증명서)</h2>
               <p className="text-sm text-muted-foreground">
-                이 논리 구조는 당신이 직접 설계했습니다.
+                이 문서는 AI에 의한 자동 대필이 아닌, 학생 본인의 주체적 고민과 고유 사유 과정(Lock & Preserved)을 증명합니다.
               </p>
             </div>
 
-            {/* 3개 지표 — PRD 성공 기준과 직접 연결 */}
+            {/* 종합 점수 디스플레이 */}
+            <div className="rounded-2xl border border-indigo-100 bg-gradient-to-br from-indigo-50/30 to-background p-6 text-center space-y-3 dark:border-indigo-950/20">
+              <span className="text-xs font-semibold text-indigo-600 uppercase tracking-widest">Thought Index</span>
+              <div className="flex items-baseline justify-center gap-1">
+                <span className="text-6xl font-extrabold text-indigo-600 tracking-tighter">{thoughtIndex}</span>
+                <span className="text-lg font-medium text-slate-400">/ 100</span>
+              </div>
+              <p className="text-xs text-muted-foreground max-w-sm mx-auto">
+                {thoughtIndex >= 80 
+                  ? "훌륭합니다! AI의 구조 조력을 활용하되 독창적인 전문 어휘와 말투를 주체적으로 통제하고 재조립하였습니다."
+                  : thoughtIndex >= 50
+                  ? "양호합니다. AI 가이드를 기반으로 본인의 수정 및 조립 개입도가 확인되었습니다."
+                  : "주의: 직접적인 수정과 재조립 개입 비율이 다소 낮습니다. 주체성을 더 높여보는 것을 추천합니다."
+                }
+              </p>
+            </div>
+
+            {/* 4개 지표 대시보드 */}
             <div className="rounded-xl border border-border/60 bg-background px-5 shadow-sm divide-y divide-border/50">
               <MetricRow
-                label="블록 재배치"
+                label="블록 재배치 빈도"
                 value={rearrangeCount}
                 goal="3회 이상"
                 met={rearrangeCount >= 3}
                 unit="회"
+                description="논증의 흐름을 본인만의 흐름으로 재배열한 흔적"
               />
               <MetricRow
                 label="직접 수정한 블록"
@@ -696,19 +1049,59 @@ export default function Home() {
                 goal="전체의 40% 이상"
                 met={editRatio >= 40}
                 unit="%"
+                description="AI가 제안한 문장에 휩쓸리지 않고 직접 타이핑하여 수정한 비율"
               />
               <MetricRow
-                label="캔버스 체류 시간"
+                label="캔버스 실질 고민 시간"
                 value={canvasMin}
                 goal="5분 이상"
                 met={canvasMin >= 5}
                 unit="분"
+                description="구조 조립 및 논리 캔버스에서의 활성 체류 시간"
+              />
+              <MetricRow
+                label="어휘 다양성 지표 (TTR)"
+                value={lexicalDiversity}
+                goal="0.4 이상"
+                met={lexicalDiversity >= 0.4}
+                description="답변 내 어휘 중복을 피하고 고유 명사/전문 어휘를 다각도로 적용한 수치"
               />
             </div>
 
+            {/* 히스토리 마일스톤 흐름 (History Map) */}
+            <div className="space-y-3">
+              <p className="text-sm font-semibold flex items-center gap-1.5">
+                <Clock className="size-4 text-indigo-600" />
+                사고 과정 히스토리 맵 (Milestones Timeline)
+              </p>
+              <div className="relative border-l border-indigo-100 ml-3 pl-4 space-y-4 dark:border-indigo-900/30">
+                {historyLogs.map((log, i) => {
+                  const logDate = new Date(log.timestamp)
+                  return (
+                    <div key={i} className="relative text-xs">
+                      {/* Timeline dot */}
+                      <span className="absolute -left-[21px] top-1.5 flex h-2 w-2 rounded-full bg-indigo-500 ring-4 ring-background" />
+                      <div className="flex items-center gap-2 mb-0.5">
+                        <span className="font-semibold text-slate-700 dark:text-slate-300">
+                          {log.action.toUpperCase()}
+                        </span>
+                        <span className="text-[10px] text-slate-400">
+                          {logDate.toLocaleTimeString("ko-KR", { hour12: false })}
+                        </span>
+                      </div>
+                      <p className="text-muted-foreground">{log.description}</p>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+
             {/* 완성된 블록 목록 */}
-            <div className="space-y-2">
-              <p className="text-sm font-medium">완성된 논리 구조</p>
+            <div className="space-y-3">
+              <p className="text-sm font-semibold flex items-center gap-1.5">
+                <Award className="size-4 text-emerald-600" />
+                독창적으로 완성된 최종 논리 에세이 구조
+              </p>
               <div className="space-y-2.5">
                 {blocks.map((block, i) => (
                   <div
@@ -724,14 +1117,32 @@ export default function Home() {
                         <span className="ml-auto text-[10px] text-emerald-600 font-medium">직접 수정</span>
                       )}
                     </div>
-                    <p className="text-sm leading-relaxed">{block.content}</p>
+                    <p className="text-sm leading-relaxed whitespace-pre-wrap">{block.content}</p>
                   </div>
                 ))}
               </div>
             </div>
 
             {/* CTA */}
-            <div className="space-y-3">
+            <div className="space-y-3 no-print">
+              <div className="flex gap-3">
+                <Button
+                  className="flex-1 gap-2"
+                  onClick={handleExportMarkdown}
+                >
+                  <Download className="size-4" />
+                  Markdown 증명서 내보내기
+                </Button>
+                <Button
+                  variant="outline"
+                  className="flex-1 gap-2"
+                  onClick={() => window.print()}
+                >
+                  <Zap className="size-4" />
+                  PDF 인쇄 / 저장
+                </Button>
+              </div>
+              
               <Button
                 variant="outline"
                 className="w-full gap-2"
@@ -740,28 +1151,24 @@ export default function Home() {
                 {copied ? (
                   <>
                     <Check className="size-4 text-emerald-500" />
-                    복사됨
+                    클립보드 복사 완료
                   </>
                 ) : (
                   <>
                     <Copy className="size-4" />
-                    논리 구조 복사하기
+                    최종 에세이 구조 텍스트 복사
                   </>
                 )}
               </Button>
+              
               <div className="flex gap-3">
                 <Button variant="outline" className="flex-1" onClick={() => setStep(2)}>
-                  ← 다시 조립하기
+                  ← 에디터로 돌아가기
                 </Button>
                 <Button className="flex-1" onClick={handleReset}>
-                  새 주제 시작하기
+                  새로운 논제 시작하기
                 </Button>
               </div>
-              {copied && (
-                <p className="text-center text-xs text-muted-foreground step-fade-in">
-                  클립보드에 복사됐습니다. 이제 이 구조로 글을 시작해보세요.
-                </p>
-              )}
             </div>
           </div>
         )}
